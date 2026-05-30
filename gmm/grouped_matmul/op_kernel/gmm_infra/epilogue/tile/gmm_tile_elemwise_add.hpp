@@ -8,43 +8,42 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef GMM_EPILOGUE_TILE_TILE_ELEMWISE_SWISH_HPP
-#define GMM_EPILOGUE_TILE_TILE_ELEMWISE_SWISH_HPP
+#ifndef GMM_EPILOGUE_TILE_TILE_ELEMWISE_ADD_HPP
+#define GMM_EPILOGUE_TILE_TILE_ELEMWISE_ADD_HPP
 
 #include "../../../gmm_infra/base_defs.hpp"
 
 namespace Catlass::Epilogue::Tile {
+
 template <
-    // / Tag indicating architecture
+    /// Tag indicating architecture
     class ArchTag_,
-    // / Compute data type
+    /// Compute data type
     class ComputeType_,
-    // / COMPUTE_LENGTH of the compute buffer
-    uint32_t COMPUTE_COMPUTE_LENGTH_>
-struct TileElemWiseSwish {
+    /// Length of the compute buffer
+    uint32_t COMPUTE_LENGTH_
+>
+struct TileElemWiseAdd {
     using ArchTag = ArchTag_;
     using ElementCompute = typename ComputeType_::Element;
 
-    static constexpr uint32_t COMPUTE_LENGTH = COMPUTE_COMPUTE_LENGTH_;
+    static constexpr uint32_t COMPUTE_LENGTH = COMPUTE_LENGTH_;
 
     CATLASS_DEVICE
-    TileElemWiseSwish() {}
+    TileElemWiseAdd() {}
 
     CATLASS_DEVICE
-    void operator () (AscendC::LocalTensor<ElementCompute> const & dstLocal,
-        AscendC::LocalTensor<ElementCompute> const & srcLocal)
+    void operator()(
+        AscendC::LocalTensor<ElementCompute> const &ubOut,
+        AscendC::LocalTensor<ElementCompute> const &ubIn0,
+        AscendC::LocalTensor<ElementCompute> const &ubIn1
+    )
     {
-        using namespace AscendC;
-        // d: -x, s: x
-        Muls(dstLocal, srcLocal, (ElementCompute)-1, COMPUTE_LENGTH);
-        // d: exp(-x), s: x
-        Exp(dstLocal, dstLocal, COMPUTE_LENGTH);
-        // d: 1 + exp(-x), s: x
-        Adds(dstLocal, dstLocal, (ElementCompute)1, COMPUTE_LENGTH);
-        // d: x / 1 + exp(-x), s: x
-        Div(dstLocal, srcLocal, dstLocal, COMPUTE_LENGTH);
+        // Do the calculation
+        AscendC::Add(ubOut, ubIn0, ubIn1, COMPUTE_LENGTH);
     }
 };
+
 } // namespace Catlass::Epilogue::Tile
 
 #endif

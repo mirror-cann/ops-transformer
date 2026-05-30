@@ -8,8 +8,8 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef GMM_GEMM_TILE_COPY_L1_TO_FP_HPP
-#define GMM_GEMM_TILE_COPY_L1_TO_FP_HPP
+#ifndef GMM_GEMM_TILE_COPY_L1_TO_BT_HPP
+#define GMM_GEMM_TILE_COPY_L1_TO_BT_HPP
 
 #include "../../../gmm_infra/base_defs.hpp"
 #include "../../../gmm_infra/arch/gmm_arch.hpp"
@@ -23,20 +23,20 @@ template <
     class L1Type,
     class L0Type = void
 >
-struct CopyL1ToFP {
-    static_assert(DEPENDENT_FALSE<ArchTag>, "Unsupported copy l1 to fixpipe buffer, can not find the specialization.");
+struct CopyL1ToBT {
+    static_assert(DEPENDENT_FALSE<ArchTag>, "Unsupported copy l1 to biasTable buffer, can not find the specialization.");
 };
 
 template<class ArchTag, class ElementSrc, class ElementDst>
-struct CopyL1ToFP<ArchTag, Catlass::Gemm::GemmType<ElementSrc, layout::VectorLayout, AscendC::TPosition::A1>,
-    Catlass::Gemm::GemmType<ElementDst, layout::VectorLayout, AscendC::TPosition::C2PIPE2GM>>{
+struct CopyL1ToBT<ArchTag, Catlass::Gemm::GemmType<ElementSrc, layout::VectorLayout, AscendC::TPosition::A1>,
+    Catlass::Gemm::GemmType<ElementDst, layout::VectorLayout, AscendC::TPosition::C2>>{
     using LayoutDst = layout::VectorLayout;
     using LayoutSrc = layout::VectorLayout;
 
-    static constexpr uint32_t ELE_NUM_PER_FP =  BYTE_PER_BLK_FP / sizeof(ElementSrc);
+    static constexpr uint32_t ELE_NUM_PER_C2 =  BYTE_PER_C2 / sizeof(ElementSrc);
 
     CATLASS_DEVICE
-    CopyL1ToFP(){}
+    CopyL1ToBT(){}
 
     CATLASS_DEVICE
     void operator()(
@@ -46,7 +46,7 @@ struct CopyL1ToFP<ArchTag, Catlass::Gemm::GemmType<ElementSrc, layout::VectorLay
     ){
         AscendC::DataCopyParams intriParams;
         intriParams.blockCount = 1;
-        intriParams.blockLen = (layoutDst.shape(0) + ELE_NUM_PER_FP - 1) / ELE_NUM_PER_FP;
+        intriParams.blockLen = (layoutDst.shape(0) + ELE_NUM_PER_C2 - 1) / ELE_NUM_PER_C2;
         intriParams.srcStride = 0;
         intriParams.dstStride = 0;
         AscendC::DataCopy(dstTensor, srcTensor, intriParams);
@@ -58,4 +58,4 @@ struct CopyL1ToFP<ArchTag, Catlass::Gemm::GemmType<ElementSrc, layout::VectorLay
 
 } // namespace Catlass::Gemm::Tile
 
-#endif // GMM_GEMM_TILE_COPY_L1_TO_FP_HPP
+#endif // GMM_GEMM_TILE_COPY_L1_TO_BT_HPP
