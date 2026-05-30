@@ -1,4 +1,4 @@
-# aclnnBlockSparseAttention
+# aclnnBlockSparseAttentionV2
 
 ## 产品支持情况
 
@@ -13,7 +13,9 @@
 
 ## 功能说明
 
-- **接口功能**：BlockSparseAttention稀疏注意力计算，支持灵活的块级稀疏模式，通过BlockSparseMask指定每个Q块选择的KV块，实现高效的稀疏注意力计算。
+- **接口功能**：BlockSparseAttentionV2稀疏注意力计算，支持灵活的块级稀疏模式，通过BlockSparseMask指定每个Q块选择的KV块，实现高效的稀疏注意力计算。
+  
+  相比于BlockSparseAttention, 本接口新增qDequantScaleOptional、kDequantScaleOptional、vDequantScaleOptional参数。
 
 - **计算公式**：稀疏块大小：$blockShapeX \times blockShapeY$，selectIdx指定稀疏模式
 
@@ -21,7 +23,7 @@
   attentionOut = Softmax(scale \cdot query \cdot key_{sparse}^T + atten\_mask) \cdot value_{sparse}
   $$
 
-  BlockSparseAttention输入query、key、value的数据排布格式支持从多种维度排布解读，可通过qInputLayout和kvInputLayout传入。
+  BlockSparseAttentionV2输入query、key、value的数据排布格式支持从多种维度排布解读，可通过qInputLayout和kvInputLayout传入。
   - B：表示输入样本批量大小（Batch）
   - T：B和S合轴紧密排列的长度（Total tokens）
   - S：表示输入样本序列长度（Seq-Length）
@@ -33,12 +35,35 @@
   - qInputLayout: "TND" "BNSD"
   - kvInputLayout: "TND" "BNSD"
 
+- **FP8特性说明（仅<term>Ascend 950PR/Ascend 950DT</term>支持）**：
+  
+  本算子新增支持FP8数据类型的输入，以提供计算效率并降低显存占用。当使用FP8输入时，需要提供相应的量化缩放因子用于反量化计算。
+
+- **量化缩放因子**：
+  
+  当输入的query、key、value采用FLOAT8_E4M3FN数据类型时，需要提供以下量化缩放因子参数：
+  
+  qDequantScale（query量化缩放因子）
+  - 数据类型：FLOAT32
+  - shape：(Batch, HeadNum, CeilDiv(maxQSeqLength, 128), 1)
+  - 用途：在QK矩阵乘法时对query进行反量化。
+
+  kDequantScale（key量化缩放因子）
+  - 数据类型：FLOAT32
+  - shape：(Batch, KVHeadNum, CeilDiv(maxKVSeqLength, 256), 1) 或 (Batch, KVHeadNum, CeilDiv(maxKVSeqLength, 512), 1)
+  - 用途：在QK矩阵乘法时对key进行反量化。
+
+  qDequantScale（value量化缩放因子）
+  - 数据类型：FLOAT32
+  - shape：(Batch, KVHeadNum, CeilDiv(maxKVSeqLength, 256), 1) 或 (Batch, KVHeadNum, CeilDiv(maxKVSeqLength, 512), 1)
+  - 用途：在PV矩阵乘法时对value进行反量化。
+
 ## 函数原型
 
-每个算子分为[两段式接口](../../../docs/zh/context/两段式接口.md)，必须先调用"aclnnBlockSparseAttentionGetWorkspaceSize"接口获取计算所需workspace大小以及包含了算子计算流程的执行器，再调用"aclnnBlockSparseAttention"接口执行计算。
+每个算子分为[两段式接口](../../../docs/zh/context/两段式接口.md)，必须先调用"aclnnBlockSparseAttentionV2GetWorkspaceSize"接口获取计算所需workspace大小以及包含了算子计算流程的执行器，再调用"aclnnBlockSparseAttentionV2"接口执行计算。
 
 ```c++
-aclnnStatus aclnnBlockSparseAttentionGetWorkspaceSize(
+aclnnStatus aclnnBlockSparseAttentionV2GetWorkspaceSize(
   const aclTensor   *query,
   const aclTensor   *key,
   const aclTensor   *value,
@@ -48,6 +73,9 @@ aclnnStatus aclnnBlockSparseAttentionGetWorkspaceSize(
   const aclIntArray *actualSeqLengthsOptional,
   const aclIntArray *actualSeqLengthsKvOptional,
   const aclTensor   *blockTableOptional,
+  const aclTensor   *qDequantScale,
+  const aclTensor   *kDequantScale,
+  const aclTesnor   *vDequantScale,
   char              *qInputLayout,
   char              *kvInputLayout,
   int64_t            numKeyValueHeads,
@@ -65,14 +93,14 @@ aclnnStatus aclnnBlockSparseAttentionGetWorkspaceSize(
 ```
 
 ```c++
-aclnnStatus aclnnBlockSparseAttention(
+aclnnStatus aclnnBlockSparseAttentionV2(
   void             *workspace,
   uint64_t          workspaceSize,
   aclOpExecutor    *executor,
   aclrtStream       stream)
 ```
 
-## aclnnBlockSparseAttentionGetWorkspaceSize
+## aclnnBlockSparseAttentionV2GetWorkspaceSize
 
 - **参数说明**
 
@@ -80,8 +108,8 @@ aclnnStatus aclnnBlockSparseAttention(
   <colgroup>
   <col style="width: 269px">
   <col style="width: 132px">
-  <col style="width: 318px">
-  <col style="width: 236px">
+  <col style="width: 270px">
+  <col style="width: 350px">
   <col style="width: 185px">
   <col style="width: 119px">
   <col style="width: 146px">
@@ -101,7 +129,7 @@ aclnnStatus aclnnBlockSparseAttention(
   </thead>
   <tbody>
     <tr>
-      <td>query</td>
+      <td>query（aclTensor*）</td>
       <td>输入</td>
       <td>公式中的query。</td>
       <td>支持的shape为：
@@ -114,7 +142,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>×</td>
     </tr>
     <tr>
-      <td>key</td>
+      <td>key（aclTensor*）</td>
       <td>输入</td>
       <td>公式中的key。</td>
       <td>支持的shape为：
@@ -129,7 +157,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>×</td>
     </tr>
     <tr>
-      <td>value</td>
+      <td>value（aclTensor*）</td>
       <td>输入</td>
       <td>公式中的value。</td>
       <td>
@@ -145,7 +173,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>×</td>
     </tr>
     <tr>
-      <td>blockSparseMaskOptional</td>
+      <td>blockSparseMaskOptional（aclTensor*）</td>
       <td>输入</td>
       <td>表示实际的稀疏pattern。</td>
       <td>
@@ -162,7 +190,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>×</td>
     </tr>
     <tr>
-      <td>attenMaskOptional</td>
+      <td>attenMaskOptional（aclTensor*）</td>
       <td>输入</td>
       <td>公式中的atten_mask。</td>
       <td>atten_mask会与稀疏pattern叠加产生作用。当前不支持，必须传入nullptr。</td>
@@ -173,7 +201,7 @@ aclnnStatus aclnnBlockSparseAttention(
     </tr>
     <tr>
     <tr>
-      <td>blockShapeOptional</td>
+      <td>blockShapeOptional（aclIntArray*）</td>
       <td>输入</td>
       <td>稀疏块形状数组。</td>
       <td>
@@ -193,7 +221,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>1</td>
       <td>-</td>
     </tr>
-      <td>actualSeqLengthsOptional</td>
+      <td>actualSeqLengthsOptional（aclIntArray*）</td>
       <td>输入</td>
       <td>描述每个Batch对应的query序列长度。</td>
       <td>
@@ -209,7 +237,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>-</td>
     </tr>
     <tr>
-      <td>actualSeqLengthsKvOptional</td>
+      <td>actualSeqLengthsKvOptional（aclIntArray*）</td>
       <td>输入</td>
       <td>描述每个Batch对应的key/value序列长度。</td>
       <td>
@@ -225,7 +253,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>-</td>
     </tr>
     <tr>
-      <td>blockTableOptional</td>
+      <td>blockTableOptional（aclTensor*）</td>
       <td>输入</td>
       <td>Block表用于PagedAttention。</td>
       <td>当前不支持，必须传入nullptr。</td>
@@ -235,7 +263,67 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>×</td>
     </tr>
     <tr>
-      <td>qInputLayout</td>
+      <td>qDequantScaleOptional（aclTensor*）</td>
+      <td>输入</td>
+      <td>query的反量化缩放因子。</td>
+      <td>
+        可选输入：
+        <ul>
+          <li>当query、key、value的数据类型为FLOAT8_E4M3FN时，此参数必须传入。</li>
+          <li>当query、key、value的数据类型为FLOAT16或BFLOAT16时，此参数应传入nullptr。</li>
+        </ul>
+        当配置此输入时：
+        <ul>
+          <li>shape为[batch, headNum, ceilDiv(maxQSeqLength, 128), 1]。</li>
+        </ul>
+      </td>
+      <td>FLOAT32</td>
+      <td>ND</td>
+      <td>4</td>
+      <td>×</td>
+    </tr>
+    <tr>
+      <td>kDequantScaleOptional（aclTensor*）</td>
+      <td>输入</td>
+      <td>key的反量化缩放因子。</td>
+      <td>
+        可选输入：
+        <ul>
+          <li>当query、key、value的数据类型为FLOAT8_E4M3FN时，此参数必须传入。</li>
+          <li>当query、key、value的数据类型为FLOAT16或BFLOAT16时，此参数应传入nullptr。</li>
+        </ul>
+        当配置此输入时：
+        <ul>
+          <li>shape为[batch, kvHeadNum, ceilDiv(maxKVSeqLength, 256), 1]或shape为[batch, kvHeadNum, ceilDiv(maxKVSeqLength, 512), 1]。</li>
+        </ul>
+      </td>
+      <td>FLOAT32</td>
+      <td>ND</td>
+      <td>4</td>
+      <td>×</td>
+    </tr>
+    <tr>
+      <td>vDequantScaleOptional（aclTensor*）</td>
+      <td>输入</td>
+      <td>value的反量化缩放因子。</td>
+      <td>
+        可选输入：
+        <ul>
+          <li>当query、key、value的数据类型为FLOAT8_E4M3FN时，此参数必须传入。</li>
+          <li>当query、key、value的数据类型为FLOAT16或BFLOAT16时，此参数应传入nullptr。</li>
+        </ul>
+        当配置此输入时：
+        <ul>
+          <li>shape为[batch, kvHeadNum, ceilDiv(maxKVSeqLength, 256), 1]或shape为[batch, kvHeadNum, ceilDiv(maxKVSeqLength, 512), 1]。</li>
+        </ul>
+      </td>
+      <td>FLOAT32</td>
+      <td>ND</td>
+      <td>4</td>
+      <td>×</td>
+    </tr>
+    <tr>
+      <td>qInputLayout（char*）</td>
       <td>输入</td>
       <td>代表输入query的数据排布格式。</td>
       <td>当前仅支持"TND"和"BNSD"，qInputLayout与kvInputLayout需要保持一致。</td>
@@ -245,7 +333,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>-</td>
     </tr>
     <tr>
-      <td>kvInputLayout</td>
+      <td>kvInputLayout（char*）</td>
       <td>输入</td>
       <td>代表输入key、value的数据排布格式。</td>
       <td>当前仅支持"TND"和"BNSD"，qInputLayout与kvInputLayout需要保持一致。</td>
@@ -255,7 +343,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>-</td>
     </tr>
     <tr>
-      <td>numKeyValueHeads</td>
+      <td>numKeyValueHeads（int64_t）</td>
       <td>输入</td>
       <td>代表key/value的head个数。</td>
       <td>-</td>
@@ -265,11 +353,11 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>-</td>
     </tr>
     <tr>
-      <td>maskType</td>
+      <td>maskType（int64_t）</td>
       <td>输入</td>
       <td>表示attention计算中的掩码类型。</td>
       <td>
-        当前只支持传0
+        当前只支持传0。
         <ul>
           <li>0：代表不加mask场景</li>
         </ul>
@@ -280,7 +368,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>-</td>
     </tr>
     <tr>
-      <td>scaleValue</td>
+      <td>scaleValue（double）</td>
       <td>输入</td>
       <td>公式中的scale，代表缩放系数。</td>
       <td>一般设置为D^-0.5。</td>
@@ -290,7 +378,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>-</td>
     </tr>
     <tr>
-      <td>innerPrecise</td>
+      <td>innerPrecise（int64_t）</td>
       <td>输入</td>
       <td>Softmax计算采取的精度级别。</td>
       <td>
@@ -307,7 +395,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>-</td>
     </tr>
     <tr>
-      <td>blockSize</td>
+      <td>blockSize（int64_t）</td>
       <td>输入</td>
       <td>PagedAttention的block大小。</td>
       <td>用于PagedAttention场景，当前不支持PagedAttention功能，因此只支持传0。</td>
@@ -317,7 +405,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>-</td>
     </tr>
     <tr>
-      <td>preTokens</td>
+      <td>preTokens（int64_t）</td>
       <td>输入</td>
       <td>滑窗attention场景下，滑窗需要向前包含多少个token。</td>
       <td>用于滑窗attention场景，当前不支持滑窗attention，只支持传入2147483647。</td>
@@ -327,7 +415,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>-</td>
     </tr>
     <tr>
-      <td>nextTokens</td>
+      <td>nextTokens（int64_t）</td>
       <td>输入</td>
       <td>滑窗attention场景下，滑窗需要向后包含多少个token。</td>
       <td>用于滑窗attention场景，当前不支持滑窗attention，只支持传入2147483647。</td>
@@ -337,7 +425,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>-</td>
     </tr>
     <tr>
-      <td>softmaxLseFlag</td>
+      <td>softmaxLseFlag（int64_t）</td>
       <td>输入</td>
       <td>是否使能softmaxLse输出的标志位。</td>
       <td>
@@ -353,7 +441,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>-</td>
     </tr>
     <tr>
-      <td>attentionOut</td>
+      <td>attentionOut（aclTensor*）</td>
       <td>输出</td>
       <td>公式中的attentionOut。</td>
       <td>数据类型和shape与query保持一致。</td>
@@ -363,7 +451,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>√</td>
     </tr>
     <tr>
-      <td>softmaxLseOptional</td>
+      <td>softmaxLseOptional（aclTensor*）</td>
       <td>输出</td>
       <td>Softmax计算的log-sum-exp中间结果。</td>
       <td>
@@ -379,7 +467,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>√</td>
     </tr>
     <tr>
-      <td>workspaceSize</td>
+      <td>workspaceSize（uint64_t）</td>
       <td>输出</td>
       <td>返回需要在Device侧申请的workspace大小。</td>
       <td>-</td>
@@ -389,7 +477,7 @@ aclnnStatus aclnnBlockSparseAttention(
       <td>-</td>
     </tr>
     <tr>
-      <td>executor</td>
+      <td>executor（aclOpExecutor**）</td>
       <td>输出</td>
       <td>返回op执行器，包含算子计算流程。</td>
       <td>-</td>
@@ -442,7 +530,7 @@ aclnnStatus aclnnBlockSparseAttention(
   </tbody>
   </table>
 
-## aclnnBlockSparseAttention
+## aclnnBlockSparseAttentionV2
 
 - **参数说明**
 
@@ -466,7 +554,7 @@ aclnnStatus aclnnBlockSparseAttention(
     <tr>
       <td>workspaceSize</td>
       <td>输入</td>
-      <td>在Device侧申请的workspace大小，由第一段接口aclnnBlockSparseAttentionGetWorkspaceSize获取。</td>
+      <td>在Device侧申请的workspace大小，由第一段接口aclnnBlockSparseAttentionV2GetWorkspaceSize获取。</td>
     </tr>
     <tr>
       <td>executor</td>
@@ -488,7 +576,7 @@ aclnnStatus aclnnBlockSparseAttention(
 ## 约束说明
 
 - 确定性计算：
-  - aclnnBlockSparseAttention默认确定性实现。
+  - aclnnBlockSparseAttentionV2默认确定性实现。
 - 该接口与PyTorch配合使用时，需要保证CANN相关包与PyTorch相关包的版本匹配。
 - qInputLayout当前仅支持"TND"和"BNSD"。
 - kvInputLayout当前仅支持"TND"和"BNSD"。
@@ -501,13 +589,21 @@ aclnnStatus aclnnBlockSparseAttention(
 - actualSeqLengthsOptional在qInputLayout为“TND”时必选；actualSeqLengthsKvOptional在kvInputLayout为“TND”时必选。
 - actualSeqLengthsOptional与actualSeqLengthsKvOptional当前必须同时配置或同时不配置，仅配置其中之一的行为将被算子拦截。
 - blockTableOptional当前只支持传入nullptr，表示不开启PagedAttention特性。
-- innerPrecise必须为0或1或4，其中，<term>Ascend 950PR/Ascend 950DT</term>仅支持配置为4，<term>Atlas A2 训练系列产品/Atlas A2 推理系列产品</term>、<term>Atlas A3 训练系列产品/Atlas A3 推理系列产品</term>仅支持配置为0或1。
+- innerPrecise仅支持配置4，表示混合精度运算，在性能与精度上取得一个折中。
 - softmaxLseFlag仅支持配置0或1，分别表示不开启/开启softmaxLse输出。当前，<term>Ascend 950PR/Ascend 950DT</term>仅支持配置为0，<term>Atlas A2 训练系列产品/Atlas A2 推理系列产品</term>、<term>Atlas A3 训练系列产品/Atlas A3 推理系列产品</term>支持配置为0或1。
 - qSeqlen和kvSeqlen不需要被blockShape整除，支持非对齐场景，实际分块数通过向上取整计算。
 - 输入query的headNum为N1，输入key和value的headNum为N2，则N1 >= N2 && N1 % N2 == 0。
 - maskType当前只支持输入0，表示不加mask。
 - blockSize当前只支持输入0，表示不支持paged cache。
 - preTokens和nextTokens当前只支持输入2147483647，表示当前token的前后所有token都参与attention运算，即不支持滑窗attention。
+- **FP8相关约束（新增）**：
+  - 仅<term>Ascend 950PR/Ascend 950DT</term>支持。
+  - 当query、key、value中任意一个数据类型为FLOAT8_E4M3FN时，query、key、value必须同时为FLOAT8_E4M3FN数据类型。
+  - 使用FP8输入时，必须提供对应的量化缩放因子输入qDequantScale、kDequantScale、vDequantScale。
+  - 量化缩放因子的数据类型必须为FLOAT32。
+  - qDequantScale的shape必须为(Batch, HeadNum, CeilDiv(maxQSeqLength, 128), 1)。
+  - kDequantScale和vDequantScale的shape必须一致，为(Batch, KVHeadNum, CeilDiv(maxKVSeqLength, 256), 1)或(Batch, KVHeadNum, CeilDiv(maxKVSeqLength, 512), 1)。
+  - 当query、key、value中任意一个数据类型不为FLOAT8_E4M3FN时，qDequantScale、kDequantScale、vDequantScale必须传入nullptr。
 
 ## 调用示例
 
@@ -522,6 +618,7 @@ aclnnStatus aclnnBlockSparseAttention(
 #include "acl/acl.h"
 #include "aclnn/opdev/fp16_t.h"
 #include "aclnnop/aclnn_block_sparse_attention.h"
+#include "aclnnop/aclnn_block_sparse_attention_v2.h"
 
 using namespace std;
 
@@ -611,7 +708,7 @@ int CreateAclTensor(const std::vector<T>& hostData, const std::vector<int64_t>& 
 void FreeResource(aclTensor *query, aclTensor *key, aclTensor *value, aclTensor *blockSparseMask,
                   aclTensor *attentionOut, aclIntArray *actualSeqLengths, aclIntArray *actualSeqLengthsKv,
                   aclIntArray *blockShape, void *queryDeviceAddr, void *keyDeviceAddr, void *valueDeviceAddr,
-                  void *blockSparseMaskDeviceAddr, void *attentionOutDeviceAddr, void *actualSeqLengthsDeviceAddr,
+                  void *blockSparseMaskDeviceAddr,void *attentionOutDeviceAddr, void *actualSeqLengthsDeviceAddr,
                   void *actualSeqLengthsKvDeviceAddr, void *workspaceAddr, int32_t deviceId, aclrtStream *stream)
 {
     // 释放资源
@@ -685,7 +782,7 @@ int main() {
     int32_t numKvHeads = 1;
     int32_t headDim = 128;
     int32_t blockShapeX = 128;
-    int32_t blockShapeY = 128;
+    int32_t blockShapeY = 256;
     
     // 计算TND格式维度
     int64_t totalQTokens = batch * qSeqlen;
@@ -700,6 +797,9 @@ int main() {
     aclTensor *keyTensor = nullptr;
     aclTensor *valueTensor = nullptr;
     aclTensor *blockSparseMaskTensor = nullptr;
+    aclTensor *qDequantScaleTensor = nullptr;
+    aclTensor *kDequantScaleTensor = nullptr;
+    aclTensor *vDequantScaleTensor = nullptr;
     aclTensor *attentionOutTensor = nullptr;
     aclIntArray *actualSeqLengths = nullptr;
     aclIntArray *actualSeqLengthsKv = nullptr;
@@ -709,6 +809,9 @@ int main() {
     void *keyDeviceAddr = nullptr;
     void *valueDeviceAddr = nullptr;
     void *blockSparseMaskDeviceAddr = nullptr;
+    void *qDequantScaleDeviceAddr = nullptr;
+    void *kDequantScaleDeviceAddr = nullptr;
+    void *vDequantScaleDeviceAddr = nullptr;
     void *attentionOutDeviceAddr = nullptr;
     void *actualSeqLengthsDeviceAddr = nullptr;
     void *actualSeqLengthsKvDeviceAddr = nullptr;
@@ -842,32 +945,35 @@ int main() {
     uint64_t workspaceSize = 0;
     aclOpExecutor* executor = nullptr;
     
-    ret = aclnnBlockSparseAttentionGetWorkspaceSize(
-        queryTensor,           // query
-        keyTensor,             // key
-        valueTensor,           // value
-        blockSparseMaskTensor, // blockSparseMask
-        nullptr,               // attenMaskOptional
-        blockShape,            // blockShape
-        actualSeqLengths,      // actualSeqLengthsOptional
-        actualSeqLengthsKv,    // actualSeqLengthsKvOptional
-        nullptr,               // blockTableOptional
-        qLayoutBuffer,         // qInputLayout
-        kvLayoutBuffer,        // kvInputLayout
-        numKvHeads,            // numKeyValueHeads
-        0,                     // maskType
-        scaleValue,            // scaleValue
-        0,                     // innerPrecise (1=fp16 softmax)
-        0,                     // blockSize
-        2147483647,            // preTokens
-        2147483647,            // nextTokens
-        0,                     // softmaxLseFlag
-        attentionOutTensor,          // attentionOut
-        nullptr,               // softmaxLseOptional
-        &workspaceSize,        // workspaceSize (out)
-        &executor);            // executor (out)
+    ret = aclnnBlockSparseAttentionV2GetWorkspaceSize(
+        queryTensor,              // query
+        keyTensor,                // key
+        valueTensor,              // value
+        blockSparseMaskTensor,    // blockSparseMask
+        nullptr,                  // attenMaskOptional
+        blockShape,               // blockShape
+        actualSeqLengths,         // actualSeqLengthsOptional
+        actualSeqLengthsKv,       // actualSeqLengthsKvOptional
+        nullptr,                  // blockTableOptional
+        nullptr,                  // qDequantScale
+        nullptr,                  // kDequantScale
+        nullptr,                  // vDequantScale
+        qLayoutBuffer,            // qInputLayout
+        kvLayoutBuffer,           // kvInputLayout
+        numKvHeads,               // numKeyValueHeads
+        0,                        // maskType
+        scaleValue,               // scaleValue
+        4,                        // innerPrecise
+        0,                        // blockSize
+        2147483647,               // preTokens
+        2147483647,               // nextTokens
+        0,                        // softmaxLseFlag
+        attentionOutTensor,       // attentionOut
+        nullptr,                  // softmaxLseOptional
+        &workspaceSize,           // workspaceSize (out)
+        &executor);               // executor (out)
 
-    CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclnnBlockSparseAttentionGetWorkspaceSize failed. ERROR: %d\n", ret);
+    CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclnnBlockSparseAttentionV2GetWorkspaceSize failed. ERROR: %d\n", ret);
               FreeResource(queryTensor, keyTensor, valueTensor, blockSparseMaskTensor, attentionOutTensor,
                            actualSeqLengths, actualSeqLengthsKv, blockShape, queryDeviceAddr, keyDeviceAddr,
                            valueDeviceAddr, blockSparseMaskDeviceAddr, attentionOutDeviceAddr,
@@ -884,24 +990,23 @@ int main() {
     if (workspaceSize > 0) {
         ret = aclrtMalloc(&workspaceAddr, workspaceSize, ACL_MEM_MALLOC_HUGE_FIRST);
         CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("allocate workspace failed. ERROR: %d\n", ret); 
-                      FreeResource(
-                      queryTensor, keyTensor, valueTensor, blockSparseMaskTensor, attentionOutTensor, actualSeqLengths,
-                      actualSeqLengthsKv, blockShape, queryDeviceAddr, keyDeviceAddr, valueDeviceAddr,
-                      blockSparseMaskDeviceAddr, attentionOutDeviceAddr, actualSeqLengthsDeviceAddr,
-                      actualSeqLengthsKvDeviceAddr, workspaceAddr, deviceId, &stream);
+                  FreeResource(queryTensor, keyTensor, valueTensor, blockSparseMaskTensor, attentionOutTensor,
+                              actualSeqLengths, actualSeqLengthsKv, blockShape, queryDeviceAddr, keyDeviceAddr,
+                              valueDeviceAddr, blockSparseMaskDeviceAddr, attentionOutDeviceAddr,
+                              actualSeqLengthsDeviceAddr, actualSeqLengthsKvDeviceAddr, workspaceAddr, deviceId, &stream);
                   return ret);
     }
 
-    // 12. 调用第二段接口
-    ret = aclnnBlockSparseAttention(workspaceAddr, workspaceSize, executor, stream);
-    CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclnnBlockSparseAttention failed. ERROR: %d\n", ret);
+    // 13. 调用第二段接口
+    ret = aclnnBlockSparseAttentionV2(workspaceAddr, workspaceSize, executor, stream);
+    CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclnnBlockSparseAttentionV2 failed. ERROR: %d\n", ret);
               FreeResource(queryTensor, keyTensor, valueTensor, blockSparseMaskTensor, attentionOutTensor,
                            actualSeqLengths, actualSeqLengthsKv, blockShape, queryDeviceAddr, keyDeviceAddr,
                            valueDeviceAddr, blockSparseMaskDeviceAddr, attentionOutDeviceAddr,
                            actualSeqLengthsDeviceAddr, actualSeqLengthsKvDeviceAddr, workspaceAddr, deviceId, &stream);
               return ret);
 
-    // 13. 同步等待任务执行结束
+    // 14. 同步等待任务执行结束
     ret = aclrtSynchronizeStream(stream);
     CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", ret);
               FreeResource(queryTensor, keyTensor, valueTensor, blockSparseMaskTensor, attentionOutTensor,
@@ -910,7 +1015,7 @@ int main() {
                            actualSeqLengthsDeviceAddr, actualSeqLengthsKvDeviceAddr, workspaceAddr, deviceId, &stream);
               return ret);
 
-    // 14. 获取输出的值，将device侧内存上的结果拷贝至host侧
+    // 15. 获取输出的值，将device侧内存上的结果拷贝至host侧
     int64_t attentionOutSize = GetShapeSize(attentionOutShape);
     std::vector<op::fp16_t> resultData(attentionOutSize, 0);
     ret = aclrtMemcpy(resultData.data(), resultData.size() * sizeof(op::fp16_t), attentionOutDeviceAddr,
@@ -922,18 +1027,19 @@ int main() {
                            actualSeqLengthsDeviceAddr, actualSeqLengthsKvDeviceAddr, workspaceAddr, deviceId, &stream);
               return ret);
 
-    // 15. 打印部分结果
+    // 16. 打印部分结果
     uint64_t printNum = 10;
     LOG_PRINT("attentionOut results (first %lu elements):\n", printNum);
     for (uint64_t i = 0; i < printNum && i < resultData.size(); i++) {
         LOG_PRINT("  index %lu: %f\n", i, static_cast<float>(resultData[i]));
     }
     
-    // 16. 释放资源
-    FreeResource(queryTensor, keyTensor, valueTensor, blockSparseMaskTensor, attentionOutTensor, actualSeqLengths,
-                 actualSeqLengthsKv, blockShape, queryDeviceAddr, keyDeviceAddr, valueDeviceAddr,
-                 blockSparseMaskDeviceAddr, attentionOutDeviceAddr, actualSeqLengthsDeviceAddr,
-                 actualSeqLengthsKvDeviceAddr, workspaceAddr, deviceId, &stream);
+    // 17. 释放资源
+    FreeResource(queryTensor, keyTensor, valueTensor, blockSparseMaskTensor, attentionOutTensor,
+                  actualSeqLengths, actualSeqLengthsKv, blockShape, queryDeviceAddr, keyDeviceAddr,
+                  valueDeviceAddr, blockSparseMaskDeviceAddr, attentionOutDeviceAddr,
+                  actualSeqLengthsDeviceAddr, actualSeqLengthsKvDeviceAddr, workspaceAddr, deviceId, &stream);
+
     LOG_PRINT("Test completed successfully!\n");
     return 0;
 }
