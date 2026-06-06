@@ -1,5 +1,4 @@
 /**
-/**
  * Copyright (c) 2025 Huawei Technologies Co., Ltd.
  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
@@ -13,8 +12,8 @@
  * \file aclnn_allto_all_quant_matmul.h
  * \brief
  */
-#ifndef OP_API_INC_ALL_TO_ALL_QUANT_MATMUL_
-#define OP_API_INC_ALL_TO_ALL_QUANT_MATMUL_
+#ifndef OP_API_INC_ALL_TO_ALL_QUANT_MATMUL_V2
+#define OP_API_INC_ALL_TO_ALL_QUANT_MATMUL_V2
 
 #include "aclnn/aclnn_base.h"
 
@@ -24,7 +23,7 @@ extern "C" {
 
 /**
  * 算子功能：实现all2all + quant + matmul融合计算
- * @brief aclnnAlltoAllQuantMatMul的第一段接口，根据具体的计算流程，计算workspace大小。
+ * @brief aclnnAlltoAllQuantMatMulV2的第一段接口，根据具体的计算流程，计算workspace大小。
  * @domain aclnn_ops_infer
  * @param [in] x1: 左矩阵输入张量，数据类型支持FLOAT16、BFLOAT16、INT4。
  * @param [in] x2: 右矩阵输入张量，数据类型支持FLOAT8_E4M3FN、FLOAT8_E5M2、INT8、INT4。
@@ -52,6 +51,7 @@ extern "C" {
  * @param [in] x1QuantDtype:
  * Matmul左矩阵的量化类型，在A5中仅支持配置35（表示ACL_FLOAT8_E5M2）或36（表示ACL_FLOAT8_E4M3FN），在A2中仅支持配置2（表示ACL_INT8）。
  * @param [in] groupSize: Matmul计算三个方向上的量化分组大小。
+ * @param [in] commMode: 通信引擎参数，用于启动不同的通信引擎。
  * @param [in] transposeX1: 左矩阵是否转置过，暂不支持配置为True。
  * @param [in] transposeX2: 右矩阵是否转置过。
  * @param [out] output: 矩阵乘法的输出结果。
@@ -61,25 +61,25 @@ extern "C" {
  *
  * @return aclnnStatus: 执行状态，返回0表示成功，其他值表示错误。
  */
-__attribute__((visibility("default"))) aclnnStatus aclnnAlltoAllQuantMatmulGetWorkspaceSize(
+__attribute__((visibility("default"))) aclnnStatus aclnnAlltoAllQuantMatmulV2GetWorkspaceSize(
     const aclTensor *x1, const aclTensor *x2, const aclTensor *biasOptional, const aclTensor *x1ScaleOptional,
     const aclTensor *x2Scale, const aclTensor *commScaleOptional, const aclTensor *x1OffsetOptional,
-    const aclTensor *x2OffsetOptional, const char *group, const aclIntArray *alltoAllAxesOptional, int64_t x1QuantMode,
-    int64_t x2QuantMode, int64_t commQuantMode, int64_t commQuantDtype, int64_t x1QuantDtype, int64_t groupSize,
-    bool transposeX1, bool transposeX2, const aclTensor *output, const aclTensor *alltoAllOutOptional,
-    uint64_t *workspaceSize, aclOpExecutor **executor);
+    const aclTensor *x2OffsetOptional, const char *group, const char *commMode, const aclIntArray *alltoAllAxesOptional,
+    int64_t x1QuantMode, int64_t x2QuantMode, int64_t commQuantMode, int64_t commQuantDtype, int64_t x1QuantDtype,
+    int64_t groupSize, bool transposeX1, bool transposeX2, const aclTensor *output,
+    const aclTensor *alltoAllOutOptional, uint64_t *workspaceSize, aclOpExecutor **executor);
 
 /**
- * @brief aclnnAlltoAllQuantMatMul的第二段接口，用于执行计算。
+ * @brief aclnnAlltoAllQuantMatMulV2的第二段接口，用于执行计算。
  * @param [in] workspace: 在Device侧申请的workspace内存地址。
- * @param [in] workspacesize: 在Device侧申请的workspace大小，由第一段接口aclnnAlltoAllQuantMatMulGetWorkspaceSize获取。
+ * @param [in] workspacesize: 在Device侧申请的workspace大小，由第一段接口aclnnAlltoAllQuantMatMulV2GetWorkspaceSize获取。
  * @param [in] executor: op执行器，包含了算子计算流程。
  * @param [in] stream: 指定执行任务的Stream。
  * @return aclnnStatus: 返回状态码
  */
-__attribute__((visibility("default"))) aclnnStatus aclnnAlltoAllQuantMatmul(void *workspace, uint64_t workspaceSize,
-                                                                            aclOpExecutor *executor,
-                                                                            aclrtStream stream);
+__attribute__((visibility("default"))) aclnnStatus aclnnAlltoAllQuantMatmulV2(void *workspace, uint64_t workspaceSize,
+                                                                              aclOpExecutor *executor,
+                                                                              aclrtStream stream);
 
 #ifdef __cplusplus
 }
