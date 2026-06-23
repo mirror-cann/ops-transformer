@@ -9,11 +9,11 @@
 */
 
 /*!
- * \file fia_tiling_fullquant_mx.h
+ * \file fia_tiling_fullquant_gqa.h
  * \brief
  */
-#ifndef FIA_TILING_FULLQUANT_MX_H
-#define FIA_TILING_FULLQUANT_MX_H
+#ifndef FIA_TILING_FULLQUANT_GQA_H
+#define FIA_TILING_FULLQUANT_GQA_H
 
 #include "register/tilingdata_base.h"
 #include "exe_graph/runtime/tiling_context.h"
@@ -57,10 +57,10 @@ struct FiaPlatFormInfo {
     uint64_t defaultSysWorkspaceSize = 0;
 };
 
-class FiaTilingFullQuantMxArch35 : public FiaTilingBase {
+class FiaTilingFullQuantGqaArch35 : public FiaTilingBase {
 public:
-    explicit FiaTilingFullQuantMxArch35(gert::TilingContext *context) : FiaTilingBase(context) {}
-    ~FiaTilingFullQuantMxArch35() override = default;
+    explicit FiaTilingFullQuantGqaArch35(gert::TilingContext *context) : FiaTilingBase(context) {}
+    ~FiaTilingFullQuantGqaArch35() override = default;
 
 protected:
     void InitTilingInfo(TilingInfo *tilingInfo) override;
@@ -125,4 +125,4 @@ private:
 };
 
 } // namespace optiling
-#endif // FIA_TILING_FULLQUANT_MX_H
+#endif // FIA_TILING_FULLQUANT_GQA_H

@@ -6,19 +6,19 @@
  * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
- */
+*/
 
 /*!
- * \file fia_kernel_fullquant_mx.h
+ * \file fia_kernel_fullquant_qga.h
  * \brief
  */
 
-#ifndef FIA_KERNEL_FULLQUANT_MX_H_
-#define FIA_KERNEL_FULLQUANT_MX_H_
+#ifndef FIA_KERNEL_FULLQUANT_GQA_H_
+#define FIA_KERNEL_FULLQUANT_GQA_H_
 
 #include "fia_public_define_arch35.h"
-#include "fia_block_cube_fullquant_mx.h"
-#include "fia_block_vec_fullquant_mx.h"
+#include "fia_block_cube_fullquant_gqa.h"
+#include "fia_block_vec_fullquant_gqa.h"
 #include "../memory_copy_arch35.h"
 #include "fia_block_vec_flashdecode_fullquant.h"
 
@@ -37,7 +37,7 @@ using namespace regbaseutil;
 
 namespace BaseApi {
 template <typename CubeBlockType, typename VecFaBlockType, typename VecFdBlockType>
-class FlashAttentionFullQuantMxKernel {
+class FlashAttentionFullQuantGqaKernel {
 public:
     static constexpr uint32_t mBaseSize = CubeBlockType::mBaseSize;
     static constexpr uint32_t s2BaseSize = CubeBlockType::s2BaseSize;
@@ -46,6 +46,7 @@ public:
 
     static constexpr bool USE_DN = CubeBlockType::USE_DN;
     static constexpr bool BMM2_TOUB = CubeBlockType::BMM2_TOUB;
+    static constexpr bool HAS_PREFIX = CubeBlockType::HAS_PREFIX;
     static constexpr bool HAS_MASK = VecFaBlockType::HAS_MASK;
 
     static constexpr uint32_t PRELOAD_N = 2; // C1 C1 C1 C2
@@ -77,6 +78,7 @@ public:
     GlobalTensor<uint64_t> actualSeqLengthsGm;
     GlobalTensor<uint32_t> fiaMetaDataGm;
     GlobalTensor<float> softmaxLseGm;
+    GlobalTensor<INPUT_T> sinkGm;
     __gm__ uint8_t *keyPtr = nullptr;
     __gm__ uint8_t *valuePtr = nullptr;
 
@@ -88,8 +90,15 @@ public:
     VecFaBlockType vecFaBlock;
     VecFdBlockType vecFdBlock;
 
+    uint32_t coreGS1Loops = 0U;
+    uint32_t frontGS1Count = 0U;
+    uint32_t invalidGS1Size = 0U;
+    uint32_t accGS1Loops = 0U;
+    uint32_t totalSize = 0U;
     uint32_t createdTaskCount = 0U;
     uint32_t executedTaskCount = 0U;
+    uint32_t varlenCalcTimes = 0U;
+    bool enableS1OutSplit = false;
 
     // schduler params
     uint64_t actSeqLensKv = 0;
@@ -107,7 +116,7 @@ public:
     ActualSeqLensParser<KV_MODE> kvActSeqLensParser;
 
     // ==============================fuction=======================================================
-    __aicore__ inline FlashAttentionFullQuantMxKernel()
+    __aicore__ inline FlashAttentionFullQuantGqaKernel()
         : cubeBlock(constInfo), vecFaBlock(constInfo), vecFdBlock(constInfo){};
     __aicore__ inline void Init(__gm__ uint8_t *query, __gm__ uint8_t *key, __gm__ uint8_t *value, __gm__ uint8_t *pse,
                                 __gm__ uint8_t *attenMask, __gm__ uint8_t *actualSeqLengths,
@@ -138,15 +147,14 @@ public:
         InitMMResBuf(workspace);
 
         if ASCEND_IS_AIV {
-            vecFaBlock.InitVecBlock(tPipe, actualSeqLengths, actualSeqLengthsKv, pScale, attenMask, softmaxLse,
-                                    attentionOut, workspace);
+            vecFaBlock.InitVecBlock(tPipe, actualSeqLengths, actualSeqLengthsKv, pScale, blockTable, dequantScaleQuery,
+                                    dequantScaleKey, dequantScaleValue, attenMask, softmaxLse, attentionOut, workspace);
             vecFaBlock.ClearOutput();
         }
 
         if ASCEND_IS_AIC {
             cubeBlock.InitCubeBlock(tPipe, &l1BufferManager, query, key, value, blockTable, queryRope, keyRope,
-                                    actualSeqLengths, actualSeqLengthsKv, dequantScaleQuery, dequantScaleKey,
-                                    dequantScaleValue);
+                                    actualSeqLengths, actualSeqLengthsKv);
         }
         if constexpr (FLASH_DECODE) {
             if ASCEND_IS_AIV {
@@ -167,9 +175,9 @@ public:
     {
         uint32_t mm1OutDtype = sizeof(T);
 
-        uint32_t mm1ResultSize = mBaseSize / CV_RATIO * s2BaseSize * mm1OutDtype / 2;
+        uint32_t mm1ResultSize = mBaseSize / CV_RATIO * s2BaseSize * mm1OutDtype;
         constexpr uint32_t mm2ResultSize = mBaseSize / CV_RATIO * dVBaseSize * sizeof(T);
-        constexpr uint32_t mm2LeftSize = mBaseSize * s2BaseSize * sizeof(INPUT_T) + mBaseSize * s2BaseSize / 32;
+        constexpr uint32_t mm2LeftSize = mBaseSize * s2BaseSize * sizeof(INPUT_T);
         l1BufferManager.Init(pipe, 524288); // 512 * 1024
         // 保存p结果的L1内存必须放在第一个L1 policy上，保证和vec申请的地址相同
         // TODO，共享buffer初始化放到block层
@@ -208,6 +216,7 @@ public:
         auto fiaAttenMaskParams = this->tilingData->fiaAttenMaskParams;
         auto fiaPageAttentionParams = this->tilingData->fiaPageAttentionParams;
         auto fiaWorkspaceParams = this->tilingData->fiaWorkspaceParams;
+        auto fiaS1OuterSplitCoreParams = this->tilingData->fiaS1OuterSplitCoreParams;
         auto fiaEmptyTensorParams = this->tilingData->fiaEmptyTensorParams;
 
         constInfo.bSize = fiaBaseParams.bSize;
@@ -228,8 +237,6 @@ public:
         }
         if constexpr (HAS_ROPE) {
             constInfo.dSizeRope = fiaBaseParams.dSizeRope;
-            constInfo.kRopeStrides.bnStride = fiaBaseParams.kRopeStrides.bnStride;
-            constInfo.kRopeStrides.n2Stride = fiaBaseParams.kRopeStrides.n2Stride;
         } else {
             constInfo.dSizeRope = 0;
         }
@@ -272,15 +279,27 @@ public:
         // LSE
         constInfo.isSoftmaxLseEnable = fiaBaseParams.isSoftMaxLseEnable;
 
-        // 任务起始位置
-        constInfo.bN2Start = fiaMetaDataGm.GetValue(GetFAMetaDataIndex(constInfo.aicIdx, FA_BN2_START_INDEX));
-        constInfo.gS1OStart = fiaMetaDataGm.GetValue(GetFAMetaDataIndex(constInfo.aicIdx, FA_M_START_INDEX));
-        constInfo.s2OStart = fiaMetaDataGm.GetValue(GetFAMetaDataIndex(constInfo.aicIdx, FA_S2_START_INDEX));
-        constInfo.bN2End = fiaMetaDataGm.GetValue(GetFAMetaDataIndex(constInfo.aicIdx, FA_BN2_END_INDEX));
-        constInfo.gS1OEnd = fiaMetaDataGm.GetValue(GetFAMetaDataIndex(constInfo.aicIdx, FA_M_END_INDEX));
-        constInfo.s2OEnd = fiaMetaDataGm.GetValue(GetFAMetaDataIndex(constInfo.aicIdx, FA_S2_END_INDEX));
-        constInfo.coreFirstTmpOutWsPos =
-            fiaMetaDataGm.GetValue(GetFAMetaDataIndex(constInfo.aicIdx, FA_FIRST_FD_DATA_WORKSPACE_IDX_INDEX));
+        enableS1OutSplit = fiaS1OuterSplitCoreParams.enableS1OutSplit;
+        if (enableS1OutSplit) {
+            constInfo.bN2Start = 0;
+            constInfo.gS1OStart = 0;
+            constInfo.s2OStart = 0;
+            constInfo.bN2End = 0;
+            constInfo.gS1OEnd = 0;
+            constInfo.s2OEnd = 0;
+            constInfo.coreFirstTmpOutWsPos = 0;
+            totalSize = fiaS1OuterSplitCoreParams.totalSize;
+        } else {
+            // 任务起始位置
+            constInfo.bN2Start = fiaMetaDataGm.GetValue(GetFAMetaDataIndex(constInfo.aicIdx, FA_BN2_START_INDEX));
+            constInfo.gS1OStart = fiaMetaDataGm.GetValue(GetFAMetaDataIndex(constInfo.aicIdx, FA_M_START_INDEX));
+            constInfo.s2OStart = fiaMetaDataGm.GetValue(GetFAMetaDataIndex(constInfo.aicIdx, FA_S2_START_INDEX));
+            constInfo.bN2End = fiaMetaDataGm.GetValue(GetFAMetaDataIndex(constInfo.aicIdx, FA_BN2_END_INDEX));
+            constInfo.gS1OEnd = fiaMetaDataGm.GetValue(GetFAMetaDataIndex(constInfo.aicIdx, FA_M_END_INDEX));
+            constInfo.s2OEnd = fiaMetaDataGm.GetValue(GetFAMetaDataIndex(constInfo.aicIdx, FA_S2_END_INDEX));
+            constInfo.coreFirstTmpOutWsPos =
+                fiaMetaDataGm.GetValue(GetFAMetaDataIndex(constInfo.aicIdx, FA_FIRST_FD_DATA_WORKSPACE_IDX_INDEX));
+        }
         constInfo.dBasicBlock = Align64Func((uint16_t)constInfo.dSizeV);
     }
 
@@ -292,6 +311,40 @@ public:
     __aicore__ inline uint32_t GetFDMetaDataIndex(uint32_t coreIdx, uint32_t metaIdx)
     {
         return FA_METADATA_SIZE * NPU_AIC_CORE_NUM + FD_METADATA_SIZE * coreIdx + metaIdx;
+    }
+
+    __aicore__ inline void ClacS1OutSplitLoopTimes()
+    {
+        int64_t varlenCycleCoreNums = constInfo.coreNum * 2;
+        int64_t varlenCalcLoops = totalSize / varlenCycleCoreNums; // 需要进行计算的循环次数(正序+倒序为一次循环)
+        int64_t varlenCalcLoopsRemain = totalSize % varlenCycleCoreNums; // 一次循环正序+倒序为两倍核数
+        varlenCalcTimes = varlenCalcLoops * 2;
+        if (varlenCalcLoopsRemain >= constInfo.aicIdx + 1) {
+            varlenCalcTimes++;
+            if (varlenCalcLoopsRemain > constInfo.coreNum &&
+                (constInfo.aicIdx + 1) > varlenCycleCoreNums - varlenCalcLoopsRemain) {
+                varlenCalcTimes++;
+            }
+        }
+    }
+
+    __aicore__ inline bool SkipForS1OutSplit()
+    {
+        if (!enableS1OutSplit) {
+            return false;
+        }
+
+        if (coreGS1Loops % 2 == 0) {
+            if (coreGS1Loops * constInfo.coreNum + constInfo.aicIdx != accGS1Loops) {
+                return true;
+            }
+        } else {
+            if ((coreGS1Loops + 1) * constInfo.coreNum - constInfo.aicIdx - 1 != accGS1Loops) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     __aicore__ inline void CrossCoreBufferInit()
@@ -333,6 +386,10 @@ public:
         prevBN2Idx = bN2Cur;
         prevGS1Idx = gS1Cur;
 
+        if (enableS1OutSplit) {
+            ClacS1OutSplitLoopTimes();
+        }
+
         bool shouldDispatchTask = true;
         bool shouldExecuteTask = false;
         while (shouldDispatchTask || shouldExecuteTask) {
@@ -346,6 +403,9 @@ public:
                     createdTaskCount++;
                     UpdateAxisInfo(taskDealMode, bN2Cur, gS1Cur, s2Cur);
                 } else if (taskDealMode == TASK_DEAL_MODE::DEAL_ZERO) {
+                    if ASCEND_IS_AIV {
+                        vecFaBlock.DealZeroActSeqLen(bN2Cur);
+                    }
                     UpdateAxisInfo(taskDealMode, bN2Cur, gS1Cur, s2Cur);
                     continue;
                 } else {
@@ -364,17 +424,17 @@ public:
 
     __aicore__ inline bool ShouldDispatchTask(uint32_t bN2Cur, uint32_t gS1Cur, uint32_t s2Cur)
     {
-        if (bN2Cur != constInfo.bN2End) {
-            return bN2Cur < constInfo.bN2End;
+        if (enableS1OutSplit) {
+            return coreGS1Loops < varlenCalcTimes; // 按照S1块维度进行任务拦截
         }
-        if (gS1Cur != constInfo.gS1OEnd) {
-            return gS1Cur < constInfo.gS1OEnd;
-        }
-        return s2Cur < constInfo.s2OEnd;
+        return ((bN2Cur != constInfo.bN2End) || (gS1Cur != constInfo.gS1OEnd) || (s2Cur != constInfo.s2OEnd));
     }
 
     __aicore__ inline bool ShouldExecuteTask(RunInfoX taskRunInfo[PRELOAD_TASK_CACHE_SIZE])
     {
+        if (enableS1OutSplit) {
+            return executedTaskCount < createdTaskCount + PRELOAD_N;
+        }
         for (uint32_t i = 0; i < PRELOAD_TASK_CACHE_SIZE; i++) {
             if (taskRunInfo[i].isValid) {
                 return true;
@@ -418,8 +478,16 @@ public:
             prevGS1Idx = gS1Cur;
         }
 
+        if (curS2Start < curS2End && s2Cur >= curS2End) {
+            return TASK_DEAL_MODE::S2_END;
+        }
+
         if (s2Cur < curS2Start || s2Cur >= curS2End) {
-            return TASK_DEAL_MODE::SKIP_REMAINING_S2;
+            return TASK_DEAL_MODE::SKIP;
+        }
+
+        if (SkipForS1OutSplit()) {
+            return TASK_DEAL_MODE::SKIP_S1OUT;
         }
 
         if (s2Cur == curS2Start) {
@@ -457,7 +525,7 @@ public:
             curS2Start = constInfo.s2OStart;
         }
 
-        if ((bN2Cur == constInfo.bN2End) && (gS1Cur == constInfo.gS1OEnd)) {
+        if (!enableS1OutSplit && (bN2Cur == constInfo.bN2End) && (gS1Cur == constInfo.gS1OEnd)) {
             tailS2Split = constInfo.s2OEnd != 0U;
             curS2End = constInfo.s2OEnd;
         }
@@ -473,8 +541,8 @@ public:
         // 2. calc index of s2FirstToken, s2LastToken by index of s1GFirstToken, s1GLastToken
         int64_t s1GFirstToken = static_cast<int64_t>(gS1Cur) * static_cast<int64_t>(mBaseSize);
         int64_t s1GLastToken = AttentionCommon::Min(s1GFirstToken + static_cast<int64_t>(mBaseSize),
-                                   static_cast<int64_t>(actSeqLensQ) * static_cast<int64_t>(constInfo.realGSize)) -
-                               1;
+                                                    static_cast<int64_t>(actSeqLensQ) *
+                                                    static_cast<int64_t>(constInfo.realGSize)) - 1;
 
         int64_t s1FirstToken = 0;
         int64_t s1LastToken = 0;
@@ -521,7 +589,8 @@ public:
         }
         if (bN2Cur == constInfo.bN2End && gS1Cur == constInfo.gS1OEnd) { // last line
             tailS2Split = constInfo.s2OEnd > 0U ? true : false;
-            curS2End = constInfo.s2OEnd > 0U ? AttentionCommon::Min(s2EndWithSparse, constInfo.s2OEnd) : s2EndWithSparse;
+            curS2End = constInfo.s2OEnd > 0U ?
+                       AttentionCommon::Min(s2EndWithSparse, constInfo.s2OEnd) : s2EndWithSparse;
         }
         return;
     }
@@ -531,13 +600,10 @@ public:
         RunInfoX &runInfo0 = taskRunInfo[loop % PRELOAD_TASK_CACHE_SIZE];                  // 本轮任务
         RunInfoX &runInfoNegN = taskRunInfo[(loop - PRELOAD_N) % PRELOAD_TASK_CACHE_SIZE]; // 上PRELOAD_N轮任务
         if (runInfo0.isValid) {
-            uint32_t c1v1Loop = CeilDiv(runInfo0.actSingleLoopS2Size, 256);
-            for (uint32_t subLoop = 0; subLoop < c1v1Loop; ++subLoop) {
-                if ASCEND_IS_AIC {
-                    ComputeMm1(runInfo0, subLoop);
-                } else {
-                    ComputeVec1(runInfo0, subLoop);
-                }
+            if ASCEND_IS_AIC {
+                ComputeMm1(runInfo0);
+            } else {
+                ComputeVec1(runInfo0);
             }
         }
 
@@ -553,9 +619,9 @@ public:
         }
     }
 
-    __aicore__ inline void ComputeMm1(RunInfoX &runInfo, uint32_t subLoop)
+    __aicore__ inline void ComputeMm1(RunInfoX &runInfo)
     {
-        cubeBlock.IterateBmm1(this->bmm1Buffers.Get(), runInfo, subLoop);
+        cubeBlock.IterateBmm1(this->bmm1Buffers.Get(), runInfo);
     }
 
     __aicore__ inline void ComputeMm2(RunInfoX &runInfo)
@@ -567,13 +633,9 @@ public:
         }
     }
 
-    __aicore__ inline void ComputeVec1(RunInfoX &runInfo, uint32_t subLoop)
+    __aicore__ inline void ComputeVec1(RunInfoX &runInfo)
     {
-        if (subLoop % 2 == 0) {
-            vecFaBlock.ProcessVec1(this->l1PBuffers.Get(), this->bmm1Buffers.Get(), runInfo, subLoop);
-        } else {
-            vecFaBlock.ProcessVec1(this->l1PBuffers.GetPre(), this->bmm1Buffers.Get(), runInfo, subLoop);
-        }
+        vecFaBlock.ProcessVec1(this->l1PBuffers.Get(), this->bmm1Buffers.Get(), runInfo);
     }
 
     __aicore__ inline void ComputeVec2(RunInfoX &runInfo)
@@ -651,23 +713,23 @@ public:
             info.actMSizeAlign32 = (info.actMSize + 31) >> 5 << 5;
             info.actVecMSize = info.actMSize <= 16 ? info.actMSize : (info.actMSizeAlign32 >> 1);
         } else {
-            info.actMSizeAlign32 = (info.actMSize + 31) >> 5 << 5;
             info.actVecMSize = (info.actMSize + 1) >> 1;
         }
         info.vecMbaseIdx = 0;
         if (constInfo.subBlockIdx == 1) {
-            info.vecMbaseIdx = USE_DN ? info.actVecMSize : (info.actMSizeAlign32 >> 1);
+            info.vecMbaseIdx = info.actVecMSize;
             info.actVecMSize = info.actMSize - info.actVecMSize;
         }
 
-        if ((constInfo.bN2Start == constInfo.bN2End && constInfo.gS1OStart == constInfo.gS1OEnd)) {
+        if (!enableS1OutSplit && (constInfo.bN2Start == constInfo.bN2End && constInfo.gS1OStart == constInfo.gS1OEnd)) {
             // 所有任务属于同一个S1G
             info.isS2SplitCore = true;
         } else {
             if (headS2Split && (bN2Cur == constInfo.bN2Start) && (gS1Cur == constInfo.gS1OStart)) {
                 // 当前任务属于第一个S1G, 并且第一个S1G的S2被切分了
                 info.isS2SplitCore = true;
-            } else if (tailS2Split && (bN2Cur == constInfo.bN2End) && (gS1Cur == constInfo.gS1OEnd)) {
+            } else if (tailS2Split && (bN2Cur == constInfo.bN2End) &&
+                       (!enableS1OutSplit && gS1Cur == constInfo.gS1OEnd)) {
                 // 当前任务属于最后一个S1G, 并且最后一个S1G的S2被切分了
                 info.isS2SplitCore = true;
                 info.faTmpOutWsPos = headS2Split ? (info.faTmpOutWsPos + 1) : info.faTmpOutWsPos;
@@ -681,12 +743,19 @@ public:
         uint64_t s2LoopTimes = (actSeqLensKv + s2BaseSize - 1) / s2BaseSize;
         uint64_t gS1Size = actSeqLensQ * constInfo.realGSize;
         uint64_t gS1LoopTimes = (gS1Size + mBaseSize - 1) / mBaseSize;
-        if (taskDealMode != TASK_DEAL_MODE::SKIP_REMAINING_S2) {
-            // 当前S2未处理完
-            if (s2Cur + 1 < s2LoopTimes) {
-                s2Cur++;
-                return;
+        // 当前S2未处理完
+        if (s2Cur + 1 < s2LoopTimes) {
+            s2Cur++;
+            return;
+        }
+
+        if (taskDealMode == TASK_DEAL_MODE::CREATE_TASK ||
+            taskDealMode == TASK_DEAL_MODE::S2_END ||
+            taskDealMode == TASK_DEAL_MODE::SKIP_S1OUT) {
+            if (!SkipForS1OutSplit()) {
+                coreGS1Loops++;
             }
+            accGS1Loops++;
         }
 
         // 当前BN2未处理完
@@ -694,6 +763,14 @@ public:
         if (gS1Cur + 1 < gS1LoopTimes) {
             gS1Cur++;
             return;
+        }
+
+        if ((taskDealMode == TASK_DEAL_MODE::DEAL_ZERO ||
+             taskDealMode == TASK_DEAL_MODE::SKIP_ZERO)) {
+            if (!SkipForS1OutSplit()) {
+                coreGS1Loops++;
+            }
+            accGS1Loops++;
         }
 
         // 当前BN2已处理完
@@ -747,8 +824,8 @@ public:
             }
         }
     }
-}; // FlashAttentionFullQuantMxKernel
+}; // FlashAttentionFullQuantGqaKernel
 
 } // namespace BaseApi
 
-#endif // FIA_KERNEL_FULLQUANT_MX_H_
+#endif // FIA_KERNEL_FULLQUANT_GQA_H_
